@@ -5,7 +5,7 @@ namespace Andro.Infrastructure.Processes;
 
 public sealed class ProcessRunner : IProcessRunner
 {
-    public async Task<ProcessResult> RunAsync(string fileName, IReadOnlyList<string> arguments, string workingDirectory, TimeSpan timeout, CancellationToken cancellationToken = default)
+    public async Task<ProcessResult> RunAsync(string fileName, IReadOnlyList<string> arguments, string workingDirectory, TimeSpan timeout, CancellationToken cancellationToken = default, IReadOnlyDictionary<string, string>? environment = null)
     {
         var startInfo = new ProcessStartInfo(fileName)
         {
@@ -16,6 +16,7 @@ public sealed class ProcessRunner : IProcessRunner
             CreateNoWindow = true,
         };
         foreach (var argument in arguments) startInfo.ArgumentList.Add(argument);
+        foreach (var (name, value) in environment ?? new Dictionary<string, string>()) startInfo.Environment[name] = value;
 
         using var process = Process.Start(startInfo) ?? throw new InvalidOperationException($"Impossible de lancer {fileName}.");
         var stdout = process.StandardOutput.ReadToEndAsync(cancellationToken);

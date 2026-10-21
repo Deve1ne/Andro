@@ -4,6 +4,7 @@ using Andro.Application.Setup;
 using Andro.Domain.Sdk;
 using Andro.Infrastructure.Archives;
 using Andro.Infrastructure.Downloads;
+using Andro.Infrastructure.Emulator;
 using Andro.Infrastructure.Prerequisites;
 using Andro.Infrastructure.Processes;
 using Andro.Infrastructure.Setup;
@@ -26,6 +27,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ISetupStore, JsonSetupStore>();
         services.AddSingleton<IProcessRunner, ProcessRunner>();
         services.AddSingleton<IPrerequisiteChecker, PrerequisiteChecker>();
+        services.AddSingleton<IEmulatorLauncher, EmulatorLauncher>();
         services.AddSingleton<SetupService>();
         return services;
     }

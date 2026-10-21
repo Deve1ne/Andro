@@ -35,6 +35,26 @@ Le repli mémoire partagée n'a pas été nécessaire. Pistes d'optimisation CPU
 8. `-accel-check` : code de sortie 0, sortie `WHPX(10.0.26200) is installed and usable.`
 9. `-no-window` et `-qt-hide-window` donnent tous deux un flux correct. Le blocage observé au début venait du dialogue ANR, pas du mode fenêtre. On garde `-no-window`.
 
-## Validation environnement
+## Validation environnement (Task 9, 2026-10-21)
 
-(À compléter en Task 9.)
+`andro-dev` avec `--data-root "C:\Temp\Andro Jérôme"` (espace et accents) :
+
+| Étape | Résultat |
+|---|---|
+| `check` avant installation | `Unknown` (émulateur absent), disque 334 Go OK, RAM 68 Go OK |
+| `setup` | 2,79 Go annoncés, licence `android-sdk-license` affichée en entier, `oui` demandé |
+| Coupure volontaire à 89 % de l'image | `.part` conservé (2,08 Go) |
+| Relance de `setup` | aucune question de licence, reprise **à 89 %**, SHA-1 validé, AVD écrit, `Environnement prêt.` |
+| `check` après installation | `Usable` (WHPX) |
+| `run` (démarrage à froid après snapshot corrompu) | prêt en 73 s |
+| `run` (snapshot propre) | prêt en **9 s** |
+| Play Store | `com.android.vending` présent, abilist `x86_64,arm64-v8a` |
+| `%USERPROFILE%\.android` | intact |
+
+Problèmes trouvés pendant la validation, et corrigés (tests compris) :
+1. **`ANDROID_EMULATOR_HOME` inexistant** → erreur Windows 3 → le lanceur crée `user\` et `avd\`.
+2. **Question de consentement à la télémétrie** dans un `ANDROID_EMULATOR_HOME` vierge → l'émulateur sans console s'arrête → `-no-metrics` (et donc pas de télémétrie).
+3. **Pas de console** (`CreateNoWindow`) → qemu s'arrête (0x40000015) → console masquée, sorties redirigées vers `logs\emulator.log` (sans le jeton).
+4. **Snapshot « dirty »** laissé par un arrêt forcé → plantage à chaque démarrage par snapshot → nouvel essai automatique en démarrage à froid (`-no-snapshot-load`).
+5. **Chemin non ASCII** (`Jérôme`) → qemu tourne mais n'écrit pas de fichier de découverte, et adb reste `offline` → l'émulateur et adb reçoivent le nom court 8.3 de la racine. Si Windows n'en fournit pas (8.3 désactivé), Andro affiche une erreur claire.
+6. `emulator -accel-check` relaie un chemin non quoté à `emulator-check.exe` (« Unknown argument J�r�me ») : le résultat reste juste (code de sortie 0). Bruit sans effet.
