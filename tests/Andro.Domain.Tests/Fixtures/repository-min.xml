@@ -1,0 +1,42 @@
+<?xml version='1.0' encoding='utf-8'?>
+<sdk:sdk-repository xmlns:sdk="http://schemas.android.com/sdk/android/repo/repository2/03" xmlns:common="http://schemas.android.com/repository/android/common/02" xmlns:generic="http://schemas.android.com/repository/android/generic/02" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <license id="android-sdk-license" type="text">Terms and Conditions
+
+  Line with   spaces.</license>
+  <channel id="channel-0">stable</channel>
+  <channel id="channel-2">dev</channel>
+  <remotePackage path="emulator">
+    <type-details xsi:type="generic:genericDetailsType"/>
+    <revision><major>35</major><minor>1</minor><micro>4</micro></revision>
+    <display-name>Android Emulator</display-name>
+    <uses-license ref="android-sdk-license"/>
+    <channelRef ref="channel-0"/>
+    <archives>
+      <archive>
+        <complete>
+          <size>100</size>
+          <checksum type="sha1">aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</checksum>
+          <url>emulator-windows_x64-1.zip</url>
+        </complete>
+        <host-os>windows</host-os>
+        <host-arch>x64</host-arch>
+      </archive>
+      <archive>
+        <complete>
+          <size>200</size>
+          <checksum type="sha1">bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb</checksum>
+          <url>emulator-linux_x64-1.zip</url>
+        </complete>
+        <host-os>linux</host-os>
+      </archive>
+      <archive>
+        <complete>
+          <size>300</size>
+          <checksum type="sha1">cccccccccccccccccccccccccccccccccccccccc</checksum>
+          <checksum type="sha256">dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd</checksum>
+          <url>https://example.org/abs/emulator-any.zip</url>
+        </complete>
+      </archive>
+    </archives>
+  </remotePackage>
+</sdk:sdk-repository>
