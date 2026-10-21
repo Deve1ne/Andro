@@ -54,6 +54,9 @@ public sealed class EmulatorLauncher(AndroPaths paths, IProcessRunner runner) : 
         ["ANDROID_AVD_HOME"] = paths.AvdHome,
         ["ANDROID_USER_HOME"] = paths.UserHome,
         ["ANDROID_EMULATOR_HOME"] = paths.UserHome,
+        ["TEMP"] = paths.Temp,
+        ["TMP"] = paths.Temp,
+        ["ANDROID_TMP"] = paths.Temp,
     };
 
     /// <summary>
@@ -86,10 +89,21 @@ public sealed class EmulatorLauncher(AndroPaths paths, IProcessRunner runner) : 
     {
         Directory.CreateDirectory(paths.UserHome);
         Directory.CreateDirectory(paths.AvdHome);
+        Directory.CreateDirectory(paths.Temp);
     }
 
-    /// <summary>Reads the emulator's discovery file (running\pid_*.ini) for the given AVD folder.</summary>
-    public static EmulatorDiscovery? FindDiscovery(string runningDirectory, string avdDirectory)
+    /// <summary>
+    /// Where the emulator writes running\pid_*.ini. Observed with 37.2.12: %LOCALAPPDATA%\Temp, even when TEMP is
+    /// redirected (TEMP only moves its scratch files).
+    /// </summary>
+    public static string DiscoveryDirectory =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Temp", "avd", "running");
+
+    /// <summary>
+    /// Reads the emulator's discovery file (running\pid_*.ini) for the given AVD folder. Files written before
+    /// <paramref name="notBeforeUtc"/> belong to an emulator that was killed or crashed, and are ignored.
+    /// </summary>
+    public static EmulatorDiscovery? FindDiscovery(string runningDirectory, string avdDirectory, DateTime notBeforeUtc)
     {
         if (!Directory.Exists(runningDirectory)) return null;
 
@@ -98,13 +112,14 @@ public sealed class EmulatorLauncher(AndroPaths paths, IProcessRunner runner) : 
             Dictionary<string, string> values;
             try
             {
+                if (File.GetLastWriteTimeUtc(file) < notBeforeUtc) continue;
                 values = File.ReadAllLines(file)
                     .Select(line => line.Split('=', 2))
                     .Where(parts => parts.Length == 2)
                     .GroupBy(parts => parts[0].Trim())
                     .ToDictionary(g => g.Key, g => g.First()[1].Trim());
             }
-            catch (IOException)
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {
                 continue; // being written by the emulator: next poll
             }
@@ -112,9 +127,10 @@ public sealed class EmulatorLauncher(AndroPaths paths, IProcessRunner runner) : 
             if (values.TryGetValue("avd.dir", out var dir)
                 && string.Equals(Path.GetFullPath(dir), Path.GetFullPath(avdDirectory), StringComparison.OrdinalIgnoreCase)
                 && values.TryGetValue("grpc.token", out var token)
-                && values.TryGetValue("port.serial", out var serial))
+                && values.TryGetValue("port.serial", out var serial)
+                && int.TryParse(serial, out var consolePort))
             {
-                return new EmulatorDiscovery(token, int.Parse(serial));
+                return new EmulatorDiscovery(token, consolePort);
             }
         }
         return null;
@@ -122,7 +138,7 @@ public sealed class EmulatorLauncher(AndroPaths paths, IProcessRunner runner) : 
 
     public async Task<EmulatorSession> StartAsync(string avdName, CancellationToken ct)
     {
-        PrepareDirectories(paths);
+        PrepareDirectories(Runtime);
         try
         {
             return await StartOnceAsync(avdName, coldBoot: false, ct);
@@ -138,18 +154,21 @@ public sealed class EmulatorLauncher(AndroPaths paths, IProcessRunner runner) : 
     private async Task<EmulatorSession> StartOnceAsync(string avdName, bool coldBoot, CancellationToken ct)
     {
         var grpcPort = FreeTcpPort();
+        // Small margin: the file system's write time can lag the clock read here.
+        var startedUtc = DateTime.UtcNow.AddSeconds(-2);
+        // Not disposed on success: the running emulator keeps writing to these pipes for the whole session.
         var process = Process.Start(BuildStartInfo(Runtime, avdName, grpcPort, coldBoot))
             ?? throw new InvalidOperationException("Impossible de lancer l'émulateur.");
-        PipeToLog(process);
+        PipeToLog(process, coldBoot ? "démarrage à froid" : "démarrage");
 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(BootTimeout);
         try
         {
-            var running = Path.Combine(Path.GetTempPath(), "avd", "running");
+            var running = DiscoveryDirectory;
             var avdDirectory = Path.Combine(Runtime.AvdHome, $"{avdName}.avd");
             EmulatorDiscovery? discovery;
-            while ((discovery = FindDiscovery(running, avdDirectory)) is null)
+            while ((discovery = FindDiscovery(running, avdDirectory, startedUtc)) is null)
             {
                 if (process.HasExited) throw new EmulatorExitedException(process.ExitCode);
                 await Task.Delay(500, deadline.Token);
@@ -163,10 +182,16 @@ public sealed class EmulatorLauncher(AndroPaths paths, IProcessRunner runner) : 
             }
             return session;
         }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        catch (Exception e)
         {
-            process.Kill(entireProcessTree: true);
-            throw new TimeoutException($"Android n'a pas fini de démarrer en {BootTimeout.TotalSeconds:F0} s.");
+            // Never leave a hidden emulator behind: no window, no console, 4 GB of RAM.
+            KillQuietly(process);
+            process.Dispose();
+            if (e is OperationCanceledException && !ct.IsCancellationRequested)
+            {
+                throw new TimeoutException($"Android n'a pas fini de démarrer en {BootTimeout.TotalSeconds:F0} s.");
+            }
+            throw;
         }
     }
 
@@ -185,23 +210,33 @@ public sealed class EmulatorLauncher(AndroPaths paths, IProcessRunner runner) : 
         return runner.RunAsync(adb, ["-s", session.AdbSerial, .. arguments], Path.GetDirectoryName(adb)!, TimeSpan.FromSeconds(30), ct, AndroidEnvironment(Runtime));
     }
 
-    private void PipeToLog(Process process)
+    private void PipeToLog(Process process, string header)
     {
-        Directory.CreateDirectory(paths.Logs);
-        var log = new StreamWriter(Path.Combine(paths.Logs, "emulator.log"), append: false) { AutoFlush = true };
-        var gate = new object();
-        void Write(string? line)
+        var log = new EmulatorLog(Path.Combine(paths.Logs, "emulator.log"), header);
+        process.OutputDataReceived += (_, e) =>
         {
-            // The discovery token must not end up in a log file.
-            if (line is null || line.Contains("token", StringComparison.OrdinalIgnoreCase)) return;
-            lock (gate) log.WriteLine(line);
-        }
-        process.OutputDataReceived += (_, e) => Write(e.Data);
-        process.ErrorDataReceived += (_, e) => Write(e.Data);
-        process.Exited += (_, _) => { lock (gate) log.Dispose(); };
-        process.EnableRaisingEvents = true;
+            if (e.Data is null) log.StreamEnded();
+            else log.Write(e.Data);
+        };
+        process.ErrorDataReceived += (_, e) =>
+        {
+            if (e.Data is null) log.StreamEnded();
+            else log.Write(e.Data);
+        };
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
+    }
+
+    private static void KillQuietly(Process process)
+    {
+        try
+        {
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+        }
+        catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            // Already gone.
+        }
     }
 
     private static int FreeTcpPort()

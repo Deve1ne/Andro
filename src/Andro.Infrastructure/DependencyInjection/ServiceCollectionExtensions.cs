@@ -16,12 +16,13 @@ public static class ServiceCollectionExtensions
 {
     public static IServiceCollection AddAndro(this IServiceCollection services, AndroPaths paths)
     {
-        // Large system images: no overall timeout, cancellation is the caller's.
+        // Large system images: no overall timeout; HttpDownloader detects a stalled connection per read.
         var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+        var manifestHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
 
         services.AddSingleton(paths);
         services.AddSingleton(PinnedComponents.Current);
-        services.AddSingleton<IManifestSource>(_ => new HttpManifestSource(http));
+        services.AddSingleton<IManifestSource>(_ => new HttpManifestSource(manifestHttp));
         services.AddSingleton<IDownloader>(_ => new HttpDownloader(http));
         services.AddSingleton<IArchiveExtractor, ZipArchiveExtractor>();
         services.AddSingleton<ISetupStore, JsonSetupStore>();

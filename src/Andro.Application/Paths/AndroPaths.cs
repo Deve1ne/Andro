@@ -9,6 +9,9 @@ public sealed record AndroPaths(string Root)
     /// <summary>ANDROID_USER_HOME and ANDROID_EMULATOR_HOME: keeps the emulator out of %USERPROFILE%\.android.</summary>
     public string UserHome => Path.Combine(Root, "user");
 
+    /// <summary>TEMP for the emulator: it writes its discovery file there, and %TEMP% may hold a non-ASCII user name.</summary>
+    public string Temp => Path.Combine(Root, "tmp");
+
     public string Downloads => Path.Combine(Root, "downloads");
     public string Logs => Path.Combine(Root, "logs");
     public string SettingsFile => Path.Combine(Root, "settings.json");

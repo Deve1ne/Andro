@@ -97,22 +97,78 @@ public sealed class HttpDownloaderTests : IDisposable
         Assert.False(File.Exists(Target));
     }
 
+    [Fact]
+    public async Task Complete_part_file_is_verified_without_request()
+    {
+        await File.WriteAllBytesAsync(Target + ".part", _payload);
+        var server = new FakeServer(_payload);
+
+        await new HttpDownloader(new HttpClient(server)).DownloadAsync(Archive(), Target, null, default);
+
+        Assert.Equal(0, server.Requests);
+        Assert.Equal(_payload, await File.ReadAllBytesAsync(Target));
+    }
+
+    [Fact]
+    public async Task Range_not_satisfiable_restarts_from_scratch()
+    {
+        await File.WriteAllBytesAsync(Target + ".part", _payload[..40]);
+
+        await new HttpDownloader(new HttpClient(new FakeServer(_payload, answer416Once: true))).DownloadAsync(Archive(), Target, null, default);
+
+        Assert.Equal(_payload, await File.ReadAllBytesAsync(Target));
+    }
+
+    [Fact]
+    public async Task Reuses_verified_archive_without_request()
+    {
+        await File.WriteAllBytesAsync(Target, _payload);
+        var server = new FakeServer(_payload);
+
+        await new HttpDownloader(new HttpClient(server)).DownloadAsync(Archive(), Target, null, default);
+
+        Assert.Equal(0, server.Requests);
+    }
+
+    [Fact]
+    public async Task Stalled_connection_fails_with_clear_error_and_keeps_part()
+    {
+        var server = new FakeServer(_payload, stallAfter: 30);
+        var downloader = new HttpDownloader(new HttpClient(server), readTimeout: TimeSpan.FromMilliseconds(200));
+
+        var error = await Assert.ThrowsAsync<DownloadStalledException>(() => downloader.DownloadAsync(Archive(), Target, null, default));
+
+        Assert.Contains("connexion", error.Message);
+        Assert.Equal(30, new FileInfo(Target + ".part").Length);
+    }
+
     private sealed class SyncProgress(Action<DownloadProgress> report) : IProgress<DownloadProgress>
     {
         public void Report(DownloadProgress value) => report(value);
     }
 
     /// <summary>Serves a byte array, honouring "Range: bytes=N-" with 206 unless told not to.</summary>
-    private sealed class FakeServer(byte[] payload, bool honourRange = true, int failAfter = -1, Action? onFail = null) : HttpMessageHandler
+    private sealed class FakeServer(byte[] payload, bool honourRange = true, int failAfter = -1, Action? onFail = null, bool answer416Once = false, int stallAfter = -1) : HttpMessageHandler
     {
+        private bool _answered416;
+
         public RangeItemHeaderValue? LastRange { get; private set; }
+        public int Requests { get; private set; }
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            Requests++;
             LastRange = request.Headers.Range?.Ranges.FirstOrDefault();
+            if (answer416Once && !_answered416 && LastRange is not null)
+            {
+                _answered416 = true;
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.RequestedRangeNotSatisfiable));
+            }
             var from = honourRange ? (int)(LastRange?.From ?? 0) : 0;
             var body = payload[from..];
-            Stream stream = failAfter >= 0 ? new FailingStream(body, failAfter, onFail!) : new MemoryStream(body);
+            Stream stream = stallAfter >= 0 ? new StallingStream(body, stallAfter)
+                : failAfter >= 0 ? new FailingStream(body, failAfter, onFail!)
+                : new MemoryStream(body);
 
             var response = new HttpResponseMessage(honourRange && from > 0 ? HttpStatusCode.PartialContent : HttpStatusCode.OK)
             {
@@ -120,6 +176,19 @@ public sealed class HttpDownloaderTests : IDisposable
             };
             response.Content.Headers.ContentLength = body.Length;
             return Task.FromResult(response);
+        }
+    }
+
+    /// <summary>Returns <c>stallAfter</c> bytes, then never answers again (a dropped Wi-Fi without TCP reset).</summary>
+    private sealed class StallingStream(byte[] data, int stallAfter) : MemoryStream(data)
+    {
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (Position >= stallAfter)
+            {
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+            }
+            return await base.ReadAsync(buffer[..(int)Math.Min(buffer.Length, stallAfter - Position)], cancellationToken);
         }
     }
 

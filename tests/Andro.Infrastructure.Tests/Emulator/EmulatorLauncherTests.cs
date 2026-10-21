@@ -20,6 +20,57 @@ public class EmulatorLauncherTests
     }
 
     [Fact]
+    public void Start_info_moves_temp_into_the_data_root()
+    {
+        // The emulator writes its discovery file under TEMP, which is non-ASCII for a user named "Jérôme".
+        var info = EmulatorLauncher.BuildStartInfo(Paths, "Andro", 8554);
+
+        Assert.Equal(Paths.Temp, info.Environment["TEMP"]);
+        Assert.Equal(Paths.Temp, info.Environment["TMP"]);
+        Assert.Equal(Paths.Temp, info.Environment["ANDROID_TMP"]);
+        Assert.Equal(Path.Combine(Paths.Root, "tmp"), Paths.Temp);
+    }
+
+    [Fact]
+    public void Discovery_directory_is_local_app_data_temp_whatever_temp_says()
+    {
+        // Observed with emulator 37.2.12: TEMP is honoured for its scratch files, not for the discovery file.
+        var expected = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Temp", "avd", "running");
+
+        Assert.Equal(expected, EmulatorLauncher.DiscoveryDirectory);
+    }
+
+    [Fact]
+    public async Task Cancelling_start_kills_the_emulator()
+    {
+        var paths = new AndroPaths(Directory.CreateTempSubdirectory("andro-cancel-").FullName);
+        var fake = Path.Combine(paths.Sdk, "emulator", "emulator.exe");
+        Directory.CreateDirectory(Path.GetDirectoryName(fake)!);
+        // cmd.exe waits on its (redirected, never written) stdin: a stand-in for an emulator that never boots.
+        File.Copy(Path.Combine(Environment.SystemDirectory, "cmd.exe"), fake);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        try
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                new EmulatorLauncher(paths, NSubstitute.Substitute.For<Andro.Application.Abstractions.IProcessRunner>()).StartAsync("Andro", cts.Token));
+
+            await Task.Delay(500);
+            Assert.DoesNotContain(System.Diagnostics.Process.GetProcessesByName("emulator"), p => SafePath(p) == fake);
+        }
+        finally
+        {
+            foreach (var p in System.Diagnostics.Process.GetProcessesByName("emulator").Where(p => SafePath(p) == fake)) p.Kill();
+            await Task.Delay(300);
+            Directory.Delete(paths.Root, recursive: true);
+        }
+    }
+
+    private static string? SafePath(System.Diagnostics.Process p)
+    {
+        try { return p.MainModule?.FileName; } catch { return null; }
+    }
+
+    [Fact]
     public void Start_info_runs_headless_with_grpc_port()
     {
         var info = EmulatorLauncher.BuildStartInfo(Paths, "Andro", 8554);
@@ -63,6 +114,7 @@ public class EmulatorLauncherTests
 
             Assert.True(Directory.Exists(paths.UserHome));
             Assert.True(Directory.Exists(paths.AvdHome));
+            Assert.True(Directory.Exists(paths.Temp));
         }
         finally
         {
@@ -112,9 +164,27 @@ public class EmulatorLauncherTests
             File.WriteAllText(Path.Combine(running, "pid_1.ini"), "avd.dir=C:\\Other\\Phone.avd\ngrpc.token=nope\nport.serial=5556\n");
             File.WriteAllText(Path.Combine(running, "pid_2.ini"), $"port.serial=5554\navd.dir={Path.Combine(Paths.AvdHome, "Andro.avd")}\ngrpc.port=8554\ngrpc.token=secret=with=equals\n");
 
-            var discovery = EmulatorLauncher.FindDiscovery(running, Path.Combine(Paths.AvdHome, "Andro.avd"));
+            var discovery = EmulatorLauncher.FindDiscovery(running, Path.Combine(Paths.AvdHome, "Andro.avd"), DateTime.MinValue);
 
             Assert.Equal(new EmulatorDiscovery("secret=with=equals", 5554), discovery);
+        }
+        finally
+        {
+            Directory.Delete(running, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Discovery_file_older_than_this_start_is_ignored()
+    {
+        var running = Directory.CreateTempSubdirectory("andro-running-").FullName;
+        try
+        {
+            var stale = Path.Combine(running, "pid_9.ini");
+            File.WriteAllText(stale, $"avd.dir={Path.Combine(Paths.AvdHome, "Andro.avd")}\ngrpc.token=old\nport.serial=5554\n");
+            File.SetLastWriteTimeUtc(stale, DateTime.UtcNow.AddMinutes(-10));
+
+            Assert.Null(EmulatorLauncher.FindDiscovery(running, Path.Combine(Paths.AvdHome, "Andro.avd"), DateTime.UtcNow.AddMinutes(-1)));
         }
         finally
         {

@@ -14,8 +14,18 @@ public sealed class JsonSetupStore(AndroPaths paths) : ISetupStore
     {
         if (!System.IO.File.Exists(File)) return SetupState.Empty;
 
-        await using var stream = System.IO.File.OpenRead(File);
-        var dto = await JsonSerializer.DeserializeAsync<Dto>(stream);
+        Dto? dto;
+        try
+        {
+            await using var stream = System.IO.File.OpenRead(File);
+            dto = await JsonSerializer.DeserializeAsync<Dto>(stream);
+        }
+        catch (JsonException)
+        {
+            // Truncated by a power loss: start the setup over (it re-checks everything) rather than fail forever.
+            System.IO.File.Move(File, File + ".corrupt", overwrite: true);
+            return SetupState.Empty;
+        }
         return dto is null
             ? SetupState.Empty
             : new SetupState(dto.AcceptedLicenseHashes ?? [], dto.InstalledComponents ?? [], dto.AvdCreated);
@@ -29,6 +39,7 @@ public sealed class JsonSetupStore(AndroPaths paths) : ISetupStore
         {
             var dto = new Dto(new(state.AcceptedLicenseHashes), new(state.InstalledComponents), state.AvdCreated);
             await JsonSerializer.SerializeAsync(stream, dto, new JsonSerializerOptions { WriteIndented = true });
+            stream.Flush(flushToDisk: true);
         }
         System.IO.File.Move(temp, File, overwrite: true);
     }

@@ -24,6 +24,20 @@ public sealed class JsonSetupStoreTests : IDisposable
         Assert.False(state.AvdCreated);
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("{\"AcceptedLicenseHashes\": {\"a\": ")]
+    public async Task Corrupt_file_loads_empty_state_and_keeps_a_copy(string content)
+    {
+        Directory.CreateDirectory(_paths.Root);
+        await File.WriteAllTextAsync(Path.Combine(_paths.Root, "setup-state.json"), content);
+
+        var state = await new JsonSetupStore(_paths).LoadAsync();
+
+        Assert.Empty(state.InstalledComponents);
+        Assert.True(File.Exists(Path.Combine(_paths.Root, "setup-state.json.corrupt")));
+    }
+
     [Fact]
     public async Task Round_trips_state_and_leaves_no_temp_file()
     {
